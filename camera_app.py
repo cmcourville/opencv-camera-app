@@ -1,0 +1,381 @@
+import cv2
+import numpy as np
+from datetime import datetime
+import os
+
+# iff doesn't exist, create dir for captured photos and videos
+SAVE_DIR = "captures"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# opencv_logo.png in the same directory as this script
+LOGO_PATH = "opencv_logo.png"
+
+# width of the red border added around every frame
+BORDER = 10
+
+
+SLIDER_H = 45   # pixel height of the bottom slider panel
+BUTTON_H = 32   # pixel height of the button bar below the sliders
+
+# (key label shown in button, action label, key code sent to main loop)
+BUTTON_DEFS = [
+    ("C",   "Capture", ord('c')),
+    ("V",   "Record",  ord('v')),
+    ("E",   "Color",   ord('e')),
+    ("R",   "Rotate",  ord('r')),
+    ("T",   "Thresh",  ord('t')),
+    ("B",   "Blur",    ord('b')),
+    ("S",   "Sharpen", ord('s')),
+    ("ESC", "Quit",    27),
+]
+
+slider_state = {"zoom": 0, "blur": 5}
+pending_key = {"val": -1}   # set by mouse button clicks, consumed by main loop
+_drag = {"active": None}
+_frame_wh = [640, 480]  # updated each frame so the mouse callback knows slider positions
+
+
+def draw_sliders(frame, zoom_val, blur_val):
+    h, w = frame.shape[:2]
+    panel_y = h - SLIDER_H - BUTTON_H
+    cv2.rectangle(frame, (0, panel_y), (w, h - BUTTON_H), (30, 30, 30), -1)
+
+    z_x1, z_x2 = 90, w // 2 - 20
+    z_y = panel_y + SLIDER_H // 2
+    z_thumb = int(z_x1 + (zoom_val / 20) * (z_x2 - z_x1))
+    cv2.putText(frame, f"Zoom {1.0 + zoom_val * 0.1:.1f}x", (8, z_y + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+    cv2.line(frame, (z_x1, z_y), (z_x2, z_y), (120, 120, 120), 2)
+    cv2.circle(frame, (z_thumb, z_y), 8, (0, 200, 255), -1)
+
+    b_x1, b_x2 = w // 2 + 70, w - 20
+    b_y = panel_y + SLIDER_H // 2
+    b_thumb = int(b_x1 + ((blur_val - 5) / 25) * (b_x2 - b_x1))
+    cv2.putText(frame, f"Blur  {blur_val}", (w // 2 + 8, b_y + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+    cv2.line(frame, (b_x1, b_y), (b_x2, b_y), (120, 120, 120), 2)
+    cv2.circle(frame, (b_thumb, b_y), 8, (0, 200, 255), -1)
+
+
+def draw_button_bar(frame, active_indices):
+    h, w = frame.shape[:2]
+    bar_y = h - BUTTON_H
+    cv2.rectangle(frame, (0, bar_y), (w, h), (45, 45, 45), -1)
+    n = len(BUTTON_DEFS)
+    btn_w = w // n
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = 0.36
+    for i, (key_label, label, _) in enumerate(BUTTON_DEFS):
+        x1 = i * btn_w
+        x2 = (i + 1) * btn_w if i < n - 1 else w
+        is_active = i in active_indices
+        bg = (0, 130, 170) if is_active else (80, 80, 80)
+        cv2.rectangle(frame, (x1 + 2, bar_y + 3), (x2 - 2, h - 3), bg, -1)
+        display_label = "Stop" if (key_label == "V" and is_active) else label
+        text = f"[{key_label}] {display_label}"
+        (tw, th), _ = cv2.getTextSize(text, font, scale, 1)
+        tx = x1 + max((btn_w - tw) // 2, 2)
+        ty = bar_y + (BUTTON_H + th) // 2
+        cv2.putText(frame, text, (tx, ty), font, scale, (230, 230, 230), 1)
+
+
+def on_mouse(event, x, y, flags, param):
+    w, h = _frame_wh
+    slider_y = h - SLIDER_H - BUTTON_H
+    button_y = h - BUTTON_H
+
+    # Ignore clicks in the main frame area
+    if y < slider_y:
+        if event == cv2.EVENT_LBUTTONUP:
+            _drag["active"] = None
+        return
+
+    # Button bar region
+    if y >= button_y:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            n = len(BUTTON_DEFS)
+            btn_w = w // n
+            idx = min(x // btn_w, n - 1)
+            pending_key["val"] = BUTTON_DEFS[idx][2]
+        return
+
+    # Slider region
+    z_x1, z_x2 = 90, w // 2 - 20
+    b_x1, b_x2 = w // 2 + 70, w - 20
+
+    pressing = (event == cv2.EVENT_LBUTTONDOWN or
+                (event == cv2.EVENT_MOUSEMOVE and flags & cv2.EVENT_FLAG_LBUTTON))
+    if event == cv2.EVENT_LBUTTONDOWN:
+        if z_x1 <= x <= z_x2:
+            _drag["active"] = "zoom"
+        elif b_x1 <= x <= b_x2:
+            _drag["active"] = "blur"
+
+    if pressing and _drag["active"] == "zoom":
+        slider_state["zoom"] = int(np.clip((x - z_x1) / max(z_x2 - z_x1, 1) * 20, 0, 20))
+    elif pressing and _drag["active"] == "blur":
+        slider_state["blur"] = int(np.clip((x - b_x1) / max(b_x2 - b_x1, 1) * 25 + 5, 5, 30))
+
+    if event == cv2.EVENT_LBUTTONUP:
+        _drag["active"] = None
+
+
+def add_timestamp(frame):
+    # create timestamp on bottom right corner
+    text = datetime.now().strftime("%Y/%m/%d  %H:%M:%S")
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thick)
+    h, w = frame.shape[:2]
+    pad = 8
+    x, y = w - tw - pad, h - pad
+    # Dark background rectangle for readability
+    x1_box, y1_box = x - 4, y - th - 4
+    cv2.rectangle(frame, (x1_box, y1_box), (w, h), (0, 0, 0), -1)
+    cv2.putText(frame, text, (x, y), font, scale, (255, 255, 255), thick)
+    return frame, (x1_box, y1_box, w, h)  # roi_bounds = (x1, y1, x2, y2)
+
+
+def copy_timestamp_roi(frame, roi_bounds):
+    # copies and pastes timestamp on ROI at the top right
+    x1, y1, x2, y2 = roi_bounds
+    w = frame.shape[1]
+    roi = frame[y1:y2, x1:x2].copy()
+    rh, rw = roi.shape[:2]
+    frame[0:rh, w - rw:w] = roi
+    return frame
+
+
+def apply_zoom(frame, zoom_level):
+    # sim zoom by cropping the center and resizing back to org dimensions
+    # zoom_level=1.0, no zoom; 3.0, 3x zoom
+    if zoom_level <= 1.0:
+        return frame
+    h, w = frame.shape[:2]
+    nh, nw = int(h / zoom_level), int(w / zoom_level)
+    y1, x1 = (h - nh) // 2, (w - nw) // 2
+    cropped = frame[y1:y1 + nh, x1:x1 + nw]
+    return cv2.resize(cropped, (w, h))
+
+
+def blend_logo(frame, logo):
+    # alpha-blend the OpenCV logo in top-left corner with a feathered edge
+    if logo is None:
+        return frame
+    lh, lw = logo.shape[:2]
+    if lh > frame.shape[0] or lw > frame.shape[1]:
+        return frame
+    roi = frame[0:lh, 0:lw]
+
+    if logo.shape[2] == 4:
+        alpha_mask = logo[:, :, 3] / 255.0
+        logo_rgb = logo[:, :, :3]
+    else:
+        alpha_mask = np.ones((lh, lw), dtype=np.float32)
+        logo_rgb = logo
+
+    # Feather gradient: full opacity across most of the logo, fades only at the outer edges
+    flat_x = int(lw * 0.7)
+    flat_y = int(lh * 0.7)
+    fade_x = np.concatenate([np.ones(flat_x), np.linspace(1.0, 0.0, lw - flat_x)])
+    fade_y = np.concatenate([np.ones(flat_y), np.linspace(1.0, 0.0, lh - flat_y)]).reshape(-1, 1)
+    feather = (fade_x * fade_y).astype(np.float32)
+
+    combined_alpha = (alpha_mask * feather)[:, :, np.newaxis]
+    blended = (combined_alpha * logo_rgb + (1 - combined_alpha) * roi).astype(np.uint8)
+    frame[0:lh, 0:lw] = blended
+    return frame
+
+def rotate_frame(frame, angle):
+    # rotate fram around center by  given angle in degrees
+    h, w = frame.shape[:2]
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+    return cv2.warpAffine(frame, M, (w, h))
+
+def extract_color(frame):
+    # extract pink/magenta pixels using an HSV rangs mask and bitwise and
+    # change the hsv bounds to target a diff color
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower = np.array([140, 50, 50])
+    upper = np.array([170, 255, 255])
+    mask = cv2.inRange(hsv, lower, upper)
+    return cv2.bitwise_and(frame, frame, mask=mask)
+
+
+def sharpen(frame):
+    # apply sharpening kernel using 2d convolution
+    kernel = np.array([[ 0, -1,  0],
+                       [-1,  5, -1],
+                       [ 0, -1,  0]])
+    return cv2.filter2D(frame, -1, kernel)
+
+
+def main():
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Cannot open webcam.")
+        return
+
+    # load OpenCV logo with alpha channel if exists
+    logo = None
+    if os.path.exists(LOGO_PATH):
+        raw = cv2.imread(LOGO_PATH, cv2.IMREAD_UNCHANGED)
+        if raw is not None:
+            logo = cv2.resize(raw, (80, 80))
+
+    # create window and attach trackbars
+    win = "Camera App"
+    cv2.namedWindow(win)
+    cv2.setMouseCallback(win, on_mouse)
+
+    # App state
+    recording = False
+    video_writer = None
+    flash_frames = 0      # remaining frames to show the white capture flash
+    rotation_angle = 0    # cumulative rotation; each 'r' press adds 10 degrees
+    color_mode = False
+    threshold_mode = False
+    blur_mode = False
+    sharpen_mode = False
+    photo_count = 0
+    video_count = 0
+
+    print("Controls:")
+    print("  c = capture photo    v = start/stop recording    esc = quit")
+    print("  e = color extract    r = rotate +10°             t = threshold")
+    print("  b = blur (trackbar)  s = sharpen")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Part 2: Zoom via bottom slider
+        zoom_val = slider_state["zoom"]
+        zoom_level = 1.0 + zoom_val * 0.1  # 1.0x to 3.0x
+        frame = apply_zoom(frame, zoom_level)
+
+        display = frame.copy()
+
+        # Part 4- Image processing modes (toggled by key presses)
+        if color_mode:
+            display = extract_color(display)
+
+        if rotation_angle % 360 != 0:
+            display = rotate_frame(display, rotation_angle)
+
+        if threshold_mode:
+            gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+            display = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+
+        if blur_mode:
+            sigma = slider_state["blur"]
+            display = cv2.GaussianBlur(display, (0, 0), sigma, sigma)
+
+        if sharpen_mode:
+            display = sharpen(display)
+
+        # Part 2 - timestamp in bottom-right
+        display, roi_bounds = add_timestamp(display)
+
+        # Part 3b - copy timestamp ROI to top-right
+        display = copy_timestamp_roi(display, roi_bounds)
+
+        # Part 3d - blend OpenCV logo at top-left
+        display = blend_logo(display, logo)
+
+        # Part 3c - red constant border
+        display = cv2.copyMakeBorder(
+            display, BORDER, BORDER, BORDER, BORDER,
+            cv2.BORDER_CONSTANT, value=(0, 0, 255)
+        )
+
+        # Part 2 - video recording, write frame and show REC indicator
+        if recording and video_writer is not None:
+            video_writer.write(display)
+            h_d, w_d = display.shape[:2]
+            # Red dot + REC label in top-right (inside border)
+            cv2.circle(display, (w_d - BORDER - 12, BORDER + 12), 7, (0, 0, 255), -1)
+            cv2.putText(display, "REC", (w_d - BORDER - 50, BORDER + 17),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+
+        _frame_wh[:] = [display.shape[1], display.shape[0]]
+        draw_sliders(display, slider_state["zoom"], slider_state["blur"])
+
+        # Button bar: highlight active toggles by their index in BUTTON_DEFS
+        active_btns = set()
+        if recording:       active_btns.add(1)
+        if color_mode:      active_btns.add(2)
+        if threshold_mode:  active_btns.add(4)
+        if blur_mode:       active_btns.add(5)
+        if sharpen_mode:    active_btns.add(6)
+        draw_button_bar(display, active_btns)
+
+        # Part 3a - White flash on capture
+        if flash_frames > 0:
+            cv2.imshow(win, np.full_like(display, 255))
+            flash_frames -= 1
+        else:
+            cv2.imshow(win, display)
+
+        # key handling — merge keyboard press with any pending mouse button click
+        key = cv2.waitKey(1) & 0xFF
+        if key == 0xFF and pending_key["val"] != -1:
+            key = pending_key["val"] & 0xFF
+            pending_key["val"] = -1
+
+        if key == 27:  # esc — exit
+            break
+
+        elif key == ord('c'):  # capture photo
+            flash_frames = 5  # show white flash for 5 frames
+            photo_count += 1
+            fname = os.path.join(SAVE_DIR, f"photo_{photo_count:03d}.jpg")
+            cv2.imwrite(fname, display)
+            print(f"Photo saved: {fname}")
+
+        elif key == ord('v'):  # toggle video recording
+            if not recording:
+                video_count += 1
+                fname = os.path.join(SAVE_DIR, f"video_{video_count:03d}.avi")
+                h_d, w_d = display.shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                video_writer = cv2.VideoWriter(fname, fourcc, 20.0, (w_d, h_d))
+                recording = True
+                print(f"Recording started: {fname}")
+            else:
+                recording = False
+                video_writer.release()
+                video_writer = None
+                print("Recording stopped.")
+
+        elif key == ord('e'):  # toggle color extraction
+            color_mode = not color_mode
+            print(f"Color extraction: {'ON' if color_mode else 'OFF'}")
+
+        elif key == ord('r'):  # rotate +10 degrees
+            rotation_angle = (rotation_angle + 10) % 360
+            print(f"Rotation: {rotation_angle}°")
+
+        elif key == ord('t'):  # toggle threshold
+            threshold_mode = not threshold_mode
+            print(f"Threshold: {'ON' if threshold_mode else 'OFF'}")
+
+        elif key == ord('b'):  # toggle Gaussian blur
+            blur_mode = not blur_mode
+            print(f"Blur: {'ON' if blur_mode else 'OFF'}")
+
+        elif key == ord('s'):  # toggle sharpen
+            sharpen_mode = not sharpen_mode
+            print(f"Sharpen: {'ON' if sharpen_mode else 'OFF'}")
+
+    # release everything on exit
+    if recording and video_writer is not None:
+        video_writer.release()
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
+
