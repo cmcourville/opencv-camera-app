@@ -1,6 +1,6 @@
-# CS549 Vision Lab 1 — Camera App
+# Camera App
 
-A webcam-based camera application built with OpenCV and Python for WPI CS549 (Computer Vision).
+A webcam-based camera application built with OpenCV and Python.
 
 ## Requirements
 
