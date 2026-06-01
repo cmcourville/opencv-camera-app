@@ -26,6 +26,9 @@ BUTTON_DEFS = [
     ("T",   "Thresh",  ord('t')),
     ("B",   "Blur",    ord('b')),
     ("S",   "Sharpen", ord('s')),
+    ("GX",  "Sobel X", 0x01),     # virtual keycode; mouse click toggles sobel_x_mode
+    ("GY",  "Sobel Y", 0x02),     # virtual keycode; mouse click toggles sobel_y_mode
+    ("D",   "Canny",   ord('d')),
     ("ESC", "Quit",    27),
 ]
 
@@ -226,6 +229,10 @@ def main():
     win = "Camera App"
     cv2.namedWindow(win)
     cv2.setMouseCallback(win, on_mouse)
+    # Part 1 trackbars: Sobel kernel size (0-3 → odd ksizes 1,3,5,7) and Canny thresholds
+    cv2.createTrackbar("Sobel ksize", win, 1, 3, lambda x: None)
+    cv2.createTrackbar("Canny T1",    win, 100, 5000, lambda x: None)
+    cv2.createTrackbar("Canny T2",    win, 200, 5000, lambda x: None)
 
     # App state
     recording = False
@@ -238,11 +245,16 @@ def main():
     sharpen_mode = False
     photo_count = 0
     video_count = 0
+    sobel_x_mode = False
+    sobel_y_mode = False
+    canny_mode = False
+    pending_g = False       # True after 'g' pressed; waits for 'x' or 'y'
 
     print("Controls:")
     print("  c = capture photo    v = start/stop recording    esc = quit")
     print("  e = color extract    r = rotate +10°             t = threshold")
     print("  b = blur (trackbar)  s = sharpen")
+    print("  g+x = Sobel X        g+y = Sobel Y               d = Canny")
 
     while True:
         ret, frame = cap.read()
@@ -274,6 +286,27 @@ def main():
 
         if sharpen_mode:
             display = sharpen(display)
+
+        # Part 1a/b - Sobel X and Y gradient modes
+        if sobel_x_mode:
+            ksize = 2 * cv2.getTrackbarPos("Sobel ksize", win) + 1
+            gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
+            sx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=ksize)
+            display = cv2.cvtColor(cv2.convertScaleAbs(sx), cv2.COLOR_GRAY2BGR)
+
+        if sobel_y_mode:
+            ksize = 2 * cv2.getTrackbarPos("Sobel ksize", win) + 1
+            gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
+            sy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=ksize)
+            display = cv2.cvtColor(cv2.convertScaleAbs(sy), cv2.COLOR_GRAY2BGR)
+
+        # Part 1c - Canny edge detector mode
+        if canny_mode:
+            t1 = max(1, cv2.getTrackbarPos("Canny T1", win))
+            t2 = max(1, cv2.getTrackbarPos("Canny T2", win))
+            gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, t1, t2)
+            display = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
 
         # Part 2 - timestamp in bottom-right
         display, roi_bounds = add_timestamp(display)
@@ -309,6 +342,9 @@ def main():
         if threshold_mode:  active_btns.add(4)
         if blur_mode:       active_btns.add(5)
         if sharpen_mode:    active_btns.add(6)
+        if sobel_x_mode:    active_btns.add(7)
+        if sobel_y_mode:    active_btns.add(8)
+        if canny_mode:      active_btns.add(9)
         draw_button_bar(display, active_btns)
 
         # Part 3a - White flash on capture
@@ -324,7 +360,33 @@ def main():
             key = pending_key["val"] & 0xFF
             pending_key["val"] = -1
 
-        if key == 27:  # esc — exit
+        # Part 1a/b - chord key: 'g' then 'x'/'y' activates Sobel modes
+        if key == ord('g'):
+            pending_g = True
+
+        elif pending_g and key != 0xFF:
+            pending_g = False
+            if key == ord('x'):
+                sobel_x_mode = not sobel_x_mode
+                print(f"Sobel X: {'ON' if sobel_x_mode else 'OFF'}")
+            elif key == ord('y'):
+                sobel_y_mode = not sobel_y_mode
+                print(f"Sobel Y: {'ON' if sobel_y_mode else 'OFF'}")
+
+        elif key == 0x01:  # mouse-clicked Sobel X button
+            sobel_x_mode = not sobel_x_mode
+            print(f"Sobel X: {'ON' if sobel_x_mode else 'OFF'}")
+
+        elif key == 0x02:  # mouse-clicked Sobel Y button
+            sobel_y_mode = not sobel_y_mode
+            print(f"Sobel Y: {'ON' if sobel_y_mode else 'OFF'}")
+
+        # Part 1c - Canny toggle
+        elif key == ord('d'):
+            canny_mode = not canny_mode
+            print(f"Canny: {'ON' if canny_mode else 'OFF'}")
+
+        elif key == 27:  # esc — exit
             break
 
         elif key == ord('c'):  # capture photo
