@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from datetime import datetime
 import os
+import re
 
 # iff doesn't exist, create dir for captured photos and videos
 SAVE_DIR = "captures"
@@ -229,6 +230,13 @@ def laplacian_custom(gray):
     return cv2.convertScaleAbs(cv2.filter2D(gray.astype(np.float32), -1, kernel))
 
 
+def max_capture_index(save_dir, prefix, ext):
+    # scan save_dir for prefix_NNN.ext files and return the highest NNN found
+    pat = re.compile(rf"^{prefix}_(\d+)\.{ext}$")
+    indices = [int(m.group(1)) for f in os.listdir(save_dir) if (m := pat.match(f))]
+    return max(indices, default=0)
+
+
 def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -260,8 +268,8 @@ def main():
     threshold_mode = False
     blur_mode = False
     sharpen_mode = False
-    photo_count = 0
-    video_count = 0
+    photo_count = max_capture_index(SAVE_DIR, "photo", "jpg")
+    video_count = max_capture_index(SAVE_DIR, "video", "avi")
     sobel_x_mode = False
     sobel_y_mode = False
     canny_mode = False
