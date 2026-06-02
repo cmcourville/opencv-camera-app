@@ -212,6 +212,23 @@ def sharpen(frame):
     return cv2.filter2D(frame, -1, kernel)
 
 
+# Part 2 - custom gradient/edge filters using filter2D only (no cv2.Sobel/Laplacian)
+def sobel_x_custom(gray):
+    # horizontal gradient; standard 3x3 Sobel X kernel
+    kernel = np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=np.float32)
+    return cv2.convertScaleAbs(cv2.filter2D(gray.astype(np.float32), -1, kernel))
+
+def sobel_y_custom(gray):
+    # vertical gradient; standard 3x3 Sobel Y kernel
+    kernel = np.array([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=np.float32)
+    return cv2.convertScaleAbs(cv2.filter2D(gray.astype(np.float32), -1, kernel))
+
+def laplacian_custom(gray):
+    # second-order isotropic edge detector; 3x3 Laplacian kernel
+    kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=np.float32)
+    return cv2.convertScaleAbs(cv2.filter2D(gray.astype(np.float32), -1, kernel))
+
+
 def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -248,6 +265,7 @@ def main():
     sobel_x_mode = False
     sobel_y_mode = False
     canny_mode = False
+    four_view_mode = False
     pending_g = False       # True after 'g' pressed; waits for 'x' or 'y'
 
     print("Controls:")
@@ -255,6 +273,7 @@ def main():
     print("  e = color extract    r = rotate +10°             t = threshold")
     print("  b = blur (trackbar)  s = sharpen")
     print("  g+x = Sobel X        g+y = Sobel Y               d = Canny")
+    print("  4 = Four View (Original, Laplacian, Sobel X, Sobel Y)")
 
     while True:
         ret, frame = cap.read()
@@ -267,6 +286,23 @@ def main():
         frame = apply_zoom(frame, zoom_level)
 
         display = frame.copy()
+
+        # Part 2e - 4-view composite: Original, Laplacian, Sobel X, Sobel Y from raw frame
+        if four_view_mode:
+            gray_raw = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            orig_bgr = cv2.cvtColor(gray_raw, cv2.COLOR_GRAY2BGR)
+            lap_bgr  = cv2.cvtColor(laplacian_custom(gray_raw), cv2.COLOR_GRAY2BGR)
+            sxv_bgr  = cv2.cvtColor(sobel_x_custom(gray_raw),   cv2.COLOR_GRAY2BGR)
+            syv_bgr  = cv2.cvtColor(sobel_y_custom(gray_raw),   cv2.COLOR_GRAY2BGR)
+            half = (frame.shape[1] // 2, frame.shape[0] // 2)
+            for panel, lbl in [(orig_bgr, "Original"), (lap_bgr, "Laplacian"),
+                               (sxv_bgr, "Sobel X"),   (syv_bgr, "Sobel Y")]:
+                (tw, th), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(panel, (4, 4), (tw + 8, th + 10), (0, 0, 0), -1)
+                cv2.putText(panel, lbl, (6, th + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            row1 = np.hstack([cv2.resize(orig_bgr, half), cv2.resize(lap_bgr, half)])
+            row2 = np.hstack([cv2.resize(sxv_bgr, half),  cv2.resize(syv_bgr, half)])
+            cv2.imshow("Four View", np.vstack([row1, row2]))
 
         # Part 4- Image processing modes (toggled by key presses)
         if color_mode:
@@ -385,6 +421,13 @@ def main():
         elif key == ord('d'):
             canny_mode = not canny_mode
             print(f"Canny: {'ON' if canny_mode else 'OFF'}")
+
+        # Part 2e - four-view window toggle
+        elif key == ord('4'):
+            four_view_mode = not four_view_mode
+            if not four_view_mode:
+                cv2.destroyWindow("Four View")
+            print(f"Four View: {'ON' if four_view_mode else 'OFF'}")
 
         elif key == 27:  # esc — exit
             break
